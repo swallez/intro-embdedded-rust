@@ -1,0 +1,4 @@
+WifiCredentials {
+    ssid: "the great access point",
+    pass: "can you guess?",
+}

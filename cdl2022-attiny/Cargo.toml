@@ -1,0 +1,37 @@
+[package]
+name = "cdl2022-attiny"
+version = "0.1.0"
+edition = "2018"
+publish = false
+
+[dependencies]
+panic-halt = "0.2.0"
+embedded-hal = "0.2.3"
+avr-device = "0.4.0"
+
+[dependencies.attiny-hal]
+git = "https://github.com/Rahix/avr-hal"
+rev = "533159f6c6a508abe4ecec34bf5013d7a1eb0cf5"
+features = ["attiny85"]
+
+[dependencies.arduino-hal]
+git = "https://github.com/Rahix/avr-hal"
+rev = "533159f6c6a508abe4ecec34bf5013d7a1eb0cf5"
+features = ["trinket"]
+#features = ["mcu-attiny", "attiny-hal/attiny85", "board-selected"]
+
+[profile.dev]
+panic = "abort"
+lto = true
+opt-level = "s"
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+debug = true
+lto = true
+opt-level = "s"
+
+[patch.crates-io]
+# XXX: Temporary fix for avr-rust/rust#148
+ufmt = { git = "https://github.com/Rahix/ufmt.git", rev = "12225dc1678e42fecb0e8635bf80f501e24817d9" }
