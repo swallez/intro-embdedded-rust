@@ -2,7 +2,7 @@
 
 This is the source code for my talk "Introduction to embedded Rust" at the [Capitole du Libre](https://capitoledulibre.org/) conference in November 2022.
 
-Support material: [slides](https://docs.google.com/presentation/d/e/2PACX-1vQQf8JCeoIuUm98XDuzg1yzfgfku3OcY-W9JL_1Rhw-FaMXPpdGU93jeDcCD2Q7RMvajOdt1hipcXp7/pub) and video [in French](https://www.youtube.com/watch?v=ijrcyRaWqPQ) and [in English](https://www.youtube.com/watch?v=pDoOPl5ptGs).
+Support material: [slides](https://docs.google.com/presentation/d/e/2PACX-1vQQf8JCeoIuUm98XDuzg1yzfgfku3OcY-W9JL_1Rhw-FaMXPpdGU93jeDcCD2Q7RMvajOdt1hipcXp7/pub) and video [in French](https://www.youtube.com/watch?v=2SxO74QofRA) and [in English](https://www.youtube.com/watch?v=pDoOPl5ptGs).
 
 There are two projects:
 
