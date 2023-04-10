@@ -1,30 +1,19 @@
+
+// Sample code at https://github.com/ivmarkov/rust-esp32-std-demo/blob/main/src/main.rs
+
 use esp_idf_sys as _;
 
-use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::Result;
 
 use esp_idf_hal::adc;
-use esp_idf_hal::delay;
-use esp_idf_hal::i2c;
 use esp_idf_hal::peripherals::Peripherals;
 
-use embedded_hal::adc::OneShot;
-use embedded_hal::blocking::delay::DelayMs;
-
-use log::warn;
-
-use embedded_graphics::mono_font::{ascii::FONT_10X20, MonoTextStyle};
-use embedded_graphics::pixelcolor::*;
-use embedded_graphics::prelude::*;
-use embedded_graphics::text::*;
-
-use ssd1306::mode::DisplayConfig;
-use ssd1306::prelude::*;
+use log::{info, warn};
+use build_time::build_time_local;
 
 use std::{ sync::atomic::*, sync::Arc, time::*};
-use embedded_svc::http::server::registry::Registry;
-use esp_idf_svc::http::server::EspHttpResponse;
+use esp_idf_hal::peripheral::Peripheral;
 
 struct WifiCredentials {
     ssid: &'static str,
@@ -32,193 +21,154 @@ struct WifiCredentials {
 }
 
 // Define the wifi access point credentials in a separate file
-const WIFI: WifiCredentials = include!("../../config/wifi-example.txt");
-//const WIFI: WifiCredentials = include!("../../config/wifi-home.txt");
+//const WIFI: WifiCredentials = include!("../../config/wifi.example.txt");
+const WIFI: WifiCredentials = include!("../../config/wifi-home.txt");
 //const WIFI: WifiCredentials = include!("../../config/wifi-phone.txt");
 
 
 fn main() -> Result<()> {
-    esp_idf_sys::link_patches(); // Will disappear once ESP-IDF 4.4
-
-    println!("Hello, world!");
+    esp_idf_sys::link_patches();
 
     // Bind the log crate to the ESP Logging facilities
+    //esp_idf_svc::log::EspLogger{}.set_target_level("*", log::LevelFilter::Warn);
     esp_idf_svc::log::EspLogger::initialize_default();
-    log::set_max_level(log::LevelFilter::Warn);
+    //log::set_max_level(log::LevelFilter::Info);
 
     let peripherals = Peripherals::take().unwrap();
     let pins = peripherals.pins;
-
-    // Initialize i2c bus for the display
-    let i2c_master = i2c::Master::new(
-        peripherals.i2c0,
-        i2c::MasterPins { sda: pins.gpio2, scl: pins.gpio3 },
-        i2c::config::MasterConfig::default(),
-    )?;
-
-    // Initialize a ssd1306 on i2c bus
-    let display_itf = ssd1306::I2CDisplayInterface::new(i2c_master);
-
-    let mut display = ssd1306::Ssd1306::new(
-        display_itf,
-        DisplaySize128x64,
-        DisplayRotation::Rotate0,
-    ).into_buffered_graphics_mode();
-
-    display.init()
-        .map_err(|e| anyhow::anyhow!("Display error: {:?}", e))?;
 
     // Setup data shared between tasks
     let light_value = Arc::new(AtomicU16::new(0));
 
     // Initialize Wifi
-    let _wifi = init_net_and_wifi()?;
+    let mut _wifi = init_net_and_wifi(peripherals.modem)?;
 
     // Create an http server
     let _httpd = httpd(light_value.clone())?;
 
     //---------------------------------
 
-    let mut d0 = pins.gpio0.into_analog_atten_11db()?;
+    let mut adc1 = adc::AdcDriver::new(peripherals.adc1, &adc::AdcConfig::new().calibration(true))?;
 
-    let mut powered_adc1 = adc::PoweredAdc::new(
-        peripherals.adc1,
-        adc::config::Config::new().calibration(true),
-    )?;
+    let d0 = pins.gpio0;
+    let mut adc_pin: adc::AdcChannelDriver<_, adc::Atten11dB<_>> = adc::AdcChannelDriver::new(d0)?;
 
     let stop = false;
 
     while !stop {
 
-        let value = powered_adc1.read(&mut d0).unwrap();
+        let value = adc1.read(&mut adc_pin)?;
 
         light_value.store(value, Ordering::SeqCst);
 
-        draw_text(&mut display, &format!("{}", value)).map_err(|e| anyhow::anyhow!("Display error: {:?}", e))?;
-        display
-            .flush()
-            .map_err(|e| anyhow::anyhow!("Display error: {:?}", e))?;
-
-        delay::Ets.delay_ms(300u32);
+        std::thread::sleep(Duration::from_millis(500));
     };
 
     Ok(())
 }
 
-fn draw_text<D>(display: &mut D, text: &str) -> Result<()>
-    where
-        D: DrawTarget<Color = BinaryColor> + Dimensions,
-{
-    display.clear(BinaryColor::Off)
-        .map_err(|_| anyhow!("Display error"))?;
+fn init_net_and_wifi(
+    modem: impl Peripheral<P = esp_idf_hal::modem::Modem> + 'static,
+) -> Result<(esp_idf_svc::wifi::EspWifi<'static>, esp_idf_svc::mdns::EspMdns)>{
 
-    Text::new(
-        text,
-        Point::new(10, 40),
-        MonoTextStyle::new(&FONT_10X20, BinaryColor::On),
-    )
-        .draw(display)
-        .map_err(|_| anyhow!("Display error"))?;
+    // See https://docs.espressif.com/projects/esp-idf/en/latest/esp32c3/api-guides/wifi.html
 
-    Ok(())
-}
-
-fn init_net_and_wifi() -> Result<Box<esp_idf_svc::wifi::EspWifi>> {
-
-    let netif_stack = Arc::new(esp_idf_svc::netif::EspNetifStack::new()?);
-    let sys_loop_stack = Arc::new(esp_idf_svc::sysloop::EspSysLoopStack::new()?);
-    let default_nvs = Arc::new(esp_idf_svc::nvs::EspDefaultNvs::new()?);
-
-    let wifi = configure_wifi(netif_stack, sys_loop_stack, default_nvs)?;
-
-    Ok(wifi)
-}
-
-fn configure_wifi(
-    netif_stack: Arc<esp_idf_svc::netif::EspNetifStack>,
-    sys_loop_stack: Arc<esp_idf_svc::sysloop::EspSysLoopStack>,
-    default_nvs: Arc<esp_idf_svc::nvs::EspDefaultNvs>,
-) -> Result<Box<esp_idf_svc::wifi::EspWifi>> {
-
-    use esp_idf_svc::wifi::EspWifi;
+    use esp_idf_svc::wifi::*;
     use embedded_svc::wifi::*;
+    use esp_idf_svc::netif::*;
+    use std::net::Ipv4Addr;
 
-    let mut wifi = Box::new(EspWifi::new(netif_stack, sys_loop_stack, default_nvs)?);
+    let nvs = esp_idf_svc::nvs::EspDefaultNvsPartition::take()?;
+    let sysloop = esp_idf_svc::eventloop::EspSystemEventLoop::take()?;
+    let mut wifi = EspWifi::new(modem, sysloop.clone(), Some(nvs))?;
 
-    let ap_infos = wifi.scan()?;
-
-    let ours = ap_infos.into_iter().find(|a| a.ssid == WIFI.ssid);
-
-    let channel = if let Some(ours) = ours {
-        warn!("Found access point {} on channel {}",WIFI.ssid, ours.channel);
-        Some(ours.channel)
-    } else {
-        warn!("Access point {} not found during scanning", WIFI.ssid);
-        None
-    };
-
-    wifi.set_configuration(&Configuration::Mixed(
+    // Use station (i.e. client) mode. We could also use mixed client/AP mode to create an
+    // AP on which users can configure the real AP name and credentials.
+    wifi.set_configuration(&Configuration::Client(
         ClientConfiguration {
             ssid: WIFI.ssid.into(),
             password: WIFI.pass.into(),
-            channel,
             ..Default::default()
-        },
-        AccessPointConfiguration {
-            ssid: "aptest".into(),
-            channel: channel.unwrap_or(1),
-            ..Default::default()
-        },
+        }
     ))?;
 
-    wifi.wait_status_with_timeout(Duration::from_secs(20), |status| !status.is_transitional())
-        .map_err(|e| anyhow::anyhow!("Unexpected Wifi status: {:?}", e))?;
+    let wifi_wait = WifiWait::new(&sysloop)?;
+    let wait_delay = Duration::from_secs(20);
 
-    let status = wifi.get_status();
+    // Start the WIFI subsystem
+    info!("Starting wifi");
+    wifi.start()?;
 
-    if let Status(
-        ClientStatus::Started(ClientConnectionStatus::Connected(ClientIpStatus::Done(ip_settings))),
-        ApStatus::Started(ApIpStatus::Done),
-    ) = status
-    {
-        warn!("Wifi connected. Go to http://{}", &ip_settings.ip);
-    } else {
-        bail!("Unexpected Wifi status: {:?}", status);
+    if !wifi_wait.wait_with_timeout(wait_delay, || wifi.is_started().unwrap()) {
+        bail!("Wifi did not start");
     }
 
-    Ok(wifi)
+    // Since we're in station (client) mode, connect to the AP and wait for
+    // the DHCP server to give us an IP address.
+    info!("Connecting wifi & waiting for DHCP lease");
+    wifi.connect()?;
+
+    let netif_wait = EspNetifWait::new::<EspNetif>(wifi.sta_netif(), &sysloop)?;
+
+    if !netif_wait.wait_with_timeout(wait_delay, ||
+        // Connected to AP
+        wifi.is_connected().unwrap() &&
+        // Got an IP address
+        wifi.sta_netif().get_ip_info().unwrap().ip != Ipv4Addr::new(0, 0, 0, 0)
+    ) {
+        bail!("Wifi did not connect or did not receive a DHCP lease");
+    }
+
+    let ip_info = wifi.sta_netif().get_ip_info()?;
+    warn!("Wifi connected. Go to http://{}", &ip_info.ip);
+
+    // Declare ourselves on mDNS and declare our http service on DNS-SD.
+    let mut mdns = esp_idf_svc::mdns::EspMdns::take()?;
+    mdns.set_hostname("hello-esp32")?;
+    mdns.add_service(
+        Some("Hello ESP32"),
+        "_http", "_tcp", 80,
+        &[("build-time", build_time_local!())]
+    )?;
+
+    warn!("On a machine with zeroconf, go to http://hello-esp32.local");
+
+    // These objects must be owned forever, or else the services will be shutdown.
+    Ok((wifi, mdns))
 }
 
 fn httpd(
     light: Arc<AtomicU16>
 ) -> Result<esp_idf_svc::http::server::EspHttpServer> {
-    use embedded_svc::http::server::Response;
-    use embedded_svc::http::server::SendHeaders;
-    use embedded_svc::http::SendStatus;
+
+    use embedded_svc::http::Method;
     use esp_idf_svc::http::server::Configuration;
     use esp_idf_svc::http::server::EspHttpServer;
     use embedded_svc::io::Write;
 
     let mut server = EspHttpServer::new(&Configuration::default())?;
+
     server
-        .handle_get("/", |_req, resp| {
-            resp.status(200)
-                .header("Content-Type", "text/html")
-                .send_str(r#"
-                    <p>Hello from Rust on ESP32!</p>
-                    <p><a href="/light">Light sensor</a></p>
-                "#)?;
+        .fn_handler("/", Method::Get, |req| {
+            req.into_response(
+                    200, Some("Ok"),
+                    &[("Content-Type", "text/html")])?
+                .write_all(
+                    r#"
+                        <p>Hello from Rust on ESP32!</p>
+                        <p><a href="/light">Light sensor</a></p>
+                    "#.as_bytes())
+                ?;
             Ok(())
         })?
 
-        .handle_get("/light", move |_req, resp: EspHttpResponse| {
+        .fn_handler("/light", Method::Get, move |req| {
 
-            let mut w = resp
-                .header("Content-Type", "text/html")
-                .status(200)
-                .into_writer()?;
+            let mut resp = req.into_response(
+                200, Some("Ok"),
+                &[("Content-Type", "text/html")])?;
 
-            write!(w,
+            write!(resp,
                 r#"
                     <html>
                     <head><meta http-equiv="refresh" content="1"></head>
