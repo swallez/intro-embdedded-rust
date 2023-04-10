@@ -6,8 +6,8 @@ Support material: [slides](https://docs.google.com/presentation/d/e/2PACX-1vQQf8
 
 There are two projects:
 
-* `cdl2022-attiny`: a "blink" demo for an attiny85, with a variable rate driven by a LDR (light dependent resistor)
-* `cdl2022-esp32`: two demos for an ESP32
+* `intro-attiny`: a "blink" demo for an attiny85, with a variable rate driven by a LDR (light dependent resistor)
+* `intro-esp32`: two demos for an ESP32
   * Display the value of an LDR on a tiny OLED display.
   * Display the value of an LDR on a self-refreshing web page with an embedded http server powered by ESP-IDF.
 
