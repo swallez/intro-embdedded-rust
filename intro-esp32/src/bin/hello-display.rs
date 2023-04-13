@@ -14,16 +14,21 @@ use embedded_graphics::pixelcolor::BinaryColor;
 use embedded_graphics::prelude::*;
 use embedded_graphics::text::*;
 
-use std::{ sync::atomic::*, sync::Arc};
 use std::time::Duration;
+use log::info;
 
 use ssd1306::prelude::*;
 
 fn main() -> Result<()> {
-    esp_idf_sys::link_patches(); // Will disappear once ESP-IDF 4.4
+    esp_idf_sys::link_patches();
+
+    // Bind the log crate to the ESP Logging facilities
+    esp_idf_svc::log::EspLogger::initialize_default();
 
     let peripherals = Peripherals::take().unwrap();
     let pins = peripherals.pins;
+
+    info!("Setup i2c");
 
     // Initialize i2c bus for the display
     let i2c_driver = i2c::I2cDriver::new(
@@ -42,26 +47,25 @@ fn main() -> Result<()> {
         DisplayRotation::Rotate0,
     ).into_buffered_graphics_mode();
 
+    info!("Init display");
     display.init()
         .map_err(display_error)?;
 
+    info!("Hello world");
     draw_text(&mut display, "Hello, world")?;
 
     display.flush()
         .map_err(display_error)?;
 
     std::thread::sleep(Duration::from_secs(5));
-    //delay::FreeRtos::delay_ms(5000);
 
-    // Setup data shared between tasks
-    let light_value = Arc::new(AtomicU16::new(0));
     //---------------------------------
     // Configure ADC
 
     let mut adc1 = adc::AdcDriver::new(peripherals.adc1, &adc::AdcConfig::new().calibration(true))?;
 
     let d0 = pins.gpio0;
-    let mut adc_pin: adc::AdcChannelDriver<_, adc::Atten11dB<_>> = adc::AdcChannelDriver::new(d0)?;
+    let mut adc_pin = adc::AdcChannelDriver::<_, adc::Atten11dB<_>>::new(d0)?;
 
     //---------------------------------
     // Loop to display the light measurement
@@ -71,12 +75,11 @@ fn main() -> Result<()> {
 
         let value = adc1.read(&mut adc_pin)?;
 
-        light_value.store(value, Ordering::SeqCst);
-
         draw_text(&mut display, &format!("Light: {}", value))?;
         display.flush()
             .map_err(display_error)?;
 
+        info!("Display {}", value);
         std::thread::sleep(Duration::from_millis(500));
     };
 

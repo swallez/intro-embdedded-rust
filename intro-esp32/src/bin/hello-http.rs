@@ -1,57 +1,63 @@
-
-// Sample code at https://github.com/ivmarkov/rust-esp32-std-demo/blob/main/src/main.rs
-
 use esp_idf_sys as _;
 
 use anyhow::bail;
 use anyhow::Result;
 
-use esp_idf_hal::adc;
 use esp_idf_hal::peripherals::Peripherals;
-
-use log::{info, warn};
-use build_time::build_time_local;
-
-use std::{ sync::atomic::*, sync::Arc, time::*};
 use esp_idf_hal::peripheral::Peripheral;
 
+use log::{info, warn};
+
+use build_time::build_time_local;
+
+use std::sync::atomic::{AtomicU16, Ordering};
+use std::time::Duration;
+use esp_idf_sys::EspError;
+
+// Wifi credentials
 struct WifiCredentials {
     ssid: &'static str,
     pass: &'static str,
 }
 
-// Define the wifi access point credentials in a separate file
-//const WIFI: WifiCredentials = include!("../../config/wifi.example.txt");
-const WIFI: WifiCredentials = include!("../../config/wifi-home.txt");
-//const WIFI: WifiCredentials = include!("../../config/wifi-phone.txt");
+// At home, preparing the talk.
+//const WIFI: WifiCredentials = include!("../../config/wifi-home.txt");
 
+// Phone in tethering mode. Show time, we're on stage!
+const WIFI: WifiCredentials = include!("../../config/wifi-phone.txt");
 
 fn main() -> Result<()> {
     esp_idf_sys::link_patches();
 
     // Bind the log crate to the ESP Logging facilities
-    //esp_idf_svc::log::EspLogger{}.set_target_level("*", log::LevelFilter::Warn);
     esp_idf_svc::log::EspLogger::initialize_default();
-    //log::set_max_level(log::LevelFilter::Info);
 
     let peripherals = Peripherals::take().unwrap();
     let pins = peripherals.pins;
 
-    // Setup data shared between tasks
-    let light_value = Arc::new(AtomicU16::new(0));
+    // Light measurement, shared between tasks
+    static LIGHT_VALUE: AtomicU16 = AtomicU16::new(0);
+
+    //---------------------------------
 
     // Initialize Wifi
     let mut _wifi = init_net_and_wifi(peripherals.modem)?;
 
     // Create an http server
-    let _httpd = httpd(light_value.clone())?;
+    let _httpd = httpd(&LIGHT_VALUE)?;
 
     //---------------------------------
 
-    let mut adc1 = adc::AdcDriver::new(peripherals.adc1, &adc::AdcConfig::new().calibration(true))?;
+    // Setup analog to digital converter, and measure light periodically
+    use esp_idf_hal::adc;
+
+    let mut adc1 = adc::AdcDriver::new(
+        peripherals.adc1,
+        &adc::AdcConfig::new().calibration(true)
+    )?;
 
     let d0 = pins.gpio0;
-    let mut adc_pin: adc::AdcChannelDriver<_, adc::Atten11dB<_>> = adc::AdcChannelDriver::new(d0)?;
+    let mut adc_pin = adc::AdcChannelDriver::<_, adc::Atten11dB<_>>::new(d0)?;
 
     let stop = false;
 
@@ -59,7 +65,7 @@ fn main() -> Result<()> {
 
         let value = adc1.read(&mut adc_pin)?;
 
-        light_value.store(value, Ordering::SeqCst);
+        LIGHT_VALUE.store(value, Ordering::SeqCst);
 
         std::thread::sleep(Duration::from_millis(500));
     };
@@ -78,8 +84,11 @@ fn init_net_and_wifi(
     use esp_idf_svc::netif::*;
     use std::net::Ipv4Addr;
 
+    // Get non volatile storage
     let nvs = esp_idf_svc::nvs::EspDefaultNvsPartition::take()?;
+    // Get "event loop" (actually a callback dispatcher)
     let sysloop = esp_idf_svc::eventloop::EspSystemEventLoop::take()?;
+    // Setup wifi driver
     let mut wifi = EspWifi::new(modem, sysloop.clone(), Some(nvs))?;
 
     // Use station (i.e. client) mode. We could also use mixed client/AP mode to create an
@@ -120,7 +129,7 @@ fn init_net_and_wifi(
     }
 
     let ip_info = wifi.sta_netif().get_ip_info()?;
-    warn!("Wifi connected. Go to http://{}", &ip_info.ip);
+    info!("Wifi connected. Go to http://{}", &ip_info.ip);
 
     // Declare ourselves on mDNS and declare our http service on DNS-SD.
     let mut mdns = esp_idf_svc::mdns::EspMdns::take()?;
@@ -138,7 +147,7 @@ fn init_net_and_wifi(
 }
 
 fn httpd(
-    light: Arc<AtomicU16>
+    light: &'static AtomicU16
 ) -> Result<esp_idf_svc::http::server::EspHttpServer> {
 
     use embedded_svc::http::Method;
@@ -148,41 +157,70 @@ fn httpd(
 
     let mut server = EspHttpServer::new(&Configuration::default())?;
 
-    server
-        .fn_handler("/", Method::Get, |req| {
-            req.into_response(
-                    200, Some("Ok"),
-                    &[("Content-Type", "text/html")])?
-                .write_all(
-                    r#"
-                        <p>Hello from Rust on ESP32!</p>
-                        <p><a href="/light">Light sensor</a></p>
-                    "#.as_bytes())
-                ?;
-            Ok(())
-        })?
+    // Home page
+    server.fn_handler("/", Method::Get, |req| {
+            let mut resp = req.into_response(
+                200, Some("Ok"),
+                &[("Content-Type", "text/html")])?;
 
-        .fn_handler("/light", Method::Get, move |req| {
+            write!(resp, r#"
+                <html>
+                  <head>
+                    <link rel="stylesheet" href="/style.css">
+                  </head>
+                  <body class="box">
+                    <div>
+                      <p>Hello from Rust on ESP32!</p>
+                      <p><a href="/light">Light sensor</a></p>
+                    </div>
+                  </body>
+                 </html>
+               "#)?;
+
+            Ok(())
+        })?;
+
+        // Self-refreshing page displaying the light measurement
+        server.fn_handler("/light", Method::Get, move |req| {
 
             let mut resp = req.into_response(
                 200, Some("Ok"),
                 &[("Content-Type", "text/html")])?;
 
-            write!(resp,
-                r#"
-                    <html>
-                    <head><meta http-equiv="refresh" content="1"></head>
-                    <body>Light sensor: {}</body>
-                    </html>
-                "#,
+            write!(resp, r#"
+                <html >
+                  <head>
+                    <meta http-equiv="refresh" content="1">
+                    <meta charset="UTF-8">
+                    <link rel="stylesheet" href="/style.css">
+                  </head>
+                  <body class="box">
+                    <div>
+                      Light sensor: {} 🔆
+                    </div>
+                  </body>
+                </html>"#,
                 light.load(Ordering::SeqCst)
             )?;
 
             Ok(())
         })?;
 
+        // Stylesheet
+        server.fn_handler("/style.css", Method::Get, move |req| {
+            let mut resp = req.into_response(
+                200, Some("Ok"),
+                &[("Content-Type", "text/css")])?;
+
+            resp.write(include_bytes!("../../assets/style.css"))?;
+
+            Ok(())
+        })?;
+
     Ok(server)
 }
+
+// For more examples, see "the kitchen sink" at https://github.com/ivmarkov/rust-esp32-std-demo/blob/main/src/main.rs
 
 // cargo build --release --bin hello-http
 // cargo run --release --bin hello-http

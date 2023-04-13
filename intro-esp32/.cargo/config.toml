@@ -26,7 +26,7 @@ runner = "espflash --monitor" # Select this runner for espflash v1.x.x
 [target.riscv32imc-esp-espidf]
 linker = "ldproxy"
 #runner = "espflash --monitor /dev/cu.usbserial-141150 --speed 230400" # Select this runner for espflash v1.x.x
-runner = "espflash --monitor /dev/cu.usbserial-141140 --speed 460800" # Select this runner for espflash v1.x.x
+runner = "espflash --monitor /dev/cu.usbserial-141150 --speed 230400" # Select this runner for espflash v1.x.x
 #runner = "espflash flash --monitor" # Select this runner for espflash v2.x.x
 # Future - necessary for the experimental "native build" of esp-idf-sys with ESP32C3. See also https://github.com/ivmarkov/embuild/issues/16
 # For ESP-IDF 5 add `espidf_time64` and for earlier versions - remove this flag: https://github.com/esp-rs/rust/issues/110
