@@ -1,6 +1,5 @@
 use esp_idf_sys as _;
 
-use anyhow::bail;
 use anyhow::Result;
 
 use esp_idf_hal::peripherals::Peripherals;
@@ -12,7 +11,6 @@ use build_time::build_time_local;
 
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::Duration;
-use esp_idf_sys::EspError;
 
 // Wifi credentials
 struct WifiCredentials {
@@ -81,19 +79,17 @@ fn init_net_and_wifi(
 
     use esp_idf_svc::wifi::*;
     use embedded_svc::wifi::*;
-    use esp_idf_svc::netif::*;
-    use std::net::Ipv4Addr;
 
     // Get non volatile storage
     let nvs = esp_idf_svc::nvs::EspDefaultNvsPartition::take()?;
     // Get "event loop" (actually a callback dispatcher)
     let sysloop = esp_idf_svc::eventloop::EspSystemEventLoop::take()?;
     // Setup wifi driver
-    let mut wifi = EspWifi::new(modem, sysloop.clone(), Some(nvs))?;
+    let mut esp_wifi = EspWifi::new(modem, sysloop.clone(), Some(nvs))?;
 
     // Use station (i.e. client) mode. We could also use mixed client/AP mode to create an
     // AP on which users can configure the real AP name and credentials.
-    wifi.set_configuration(&Configuration::Client(
+    esp_wifi.set_configuration(&Configuration::Client(
         ClientConfiguration {
             ssid: WIFI.ssid.into(),
             password: WIFI.pass.into(),
@@ -101,34 +97,22 @@ fn init_net_and_wifi(
         }
     ))?;
 
-    let wifi_wait = WifiWait::new(&sysloop)?;
-    let wait_delay = Duration::from_secs(20);
+    // Blocking wrapper for wifi operations. Use the non-blocking version with a timeout
+    // if there are ways to inform the outside world that wifi setup failed.
+    let mut wifi = BlockingWifi::wrap(&mut esp_wifi, sysloop)?;
 
     // Start the WIFI subsystem
     info!("Starting wifi");
     wifi.start()?;
-
-    if !wifi_wait.wait_with_timeout(wait_delay, || wifi.is_started().unwrap()) {
-        bail!("Wifi did not start");
-    }
 
     // Since we're in station (client) mode, connect to the AP and wait for
     // the DHCP server to give us an IP address.
     info!("Connecting wifi & waiting for DHCP lease");
     wifi.connect()?;
 
-    let netif_wait = EspNetifWait::new::<EspNetif>(wifi.sta_netif(), &sysloop)?;
+    wifi.wait_netif_up()?;
 
-    if !netif_wait.wait_with_timeout(wait_delay, ||
-        // Connected to AP
-        wifi.is_connected().unwrap() &&
-        // Got an IP address
-        wifi.sta_netif().get_ip_info().unwrap().ip != Ipv4Addr::new(0, 0, 0, 0)
-    ) {
-        bail!("Wifi did not connect or did not receive a DHCP lease");
-    }
-
-    let ip_info = wifi.sta_netif().get_ip_info()?;
+    let ip_info = wifi.wifi().sta_netif().get_ip_info()?;
     info!("Wifi connected. Go to http://{}", &ip_info.ip);
 
     // Declare ourselves on mDNS and declare our http service on DNS-SD.
@@ -143,7 +127,7 @@ fn init_net_and_wifi(
     warn!("On a machine with zeroconf, go to http://hello-esp32.local");
 
     // These objects must be owned forever, or else the services will be shutdown.
-    Ok((wifi, mdns))
+    Ok((esp_wifi, mdns))
 }
 
 fn httpd(
